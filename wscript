@@ -14,6 +14,7 @@ def configure(conf):
     if conf.options.udt != '':
         conf.env.INCLUDES += ["%s/include" % conf.options.udt]
         conf.env.LIBPATH += ["%s/lib" % conf.options.udt]
+    conf.env.INCLUDES += '.'
     conf.env.LIB += ['pthread']
     conf.env.CXXFLAGS += ['-O2']
     conf.check_cxx(lib = 'udt', uselib_store = 'UDT')
