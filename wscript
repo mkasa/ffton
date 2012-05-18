@@ -1,7 +1,7 @@
 
 # -*- python -*-
 APPNAME = 'ffton'
-VERSION = '1.01'
+VERSION = '1.02'
 
 def options(opt):
     opt.load('compiler_cxx python')

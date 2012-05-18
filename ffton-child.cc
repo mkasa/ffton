@@ -174,7 +174,11 @@ void sender(char* fname[], int numFiles, const char* peerName, const char* peerP
   }
   for(int fileIndex = 0; fileIndex < numFiles; ++fileIndex) {
     const char* fileName = fname[fileIndex];
+#ifndef __APPLE__
+    const int fd = open(fname[fileIndex], O_RDONLY);
+#else
     const int fd = open(fname[fileIndex], O_RDONLY | O_LARGEFILE);
+#endif
     fprintf(stderr, "INFO: sending '%s'\n", fileName);
     if(fd == -1) {
       fprintf(stderr, "ERROR: Could not open '%s'\n", fileName);
@@ -233,7 +237,11 @@ void receiver(char* fname[], int numFiles, const char* peerName, const char* pee
   }
   for(int fileIndex = 0; fileIndex < numFiles; ++fileIndex) {
     const char* fileName = fname[fileIndex];
+#ifndef __APPLE__
+    const int fd = open(fileName, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+#else
     const int fd = open(fileName, O_LARGEFILE | O_CREAT | O_TRUNC | O_WRONLY, 0644);
+#endif
     if(fd == -1) {
       fprintf(stderr, "ERROR: Could not open '%s'\n", fileName);
       return;
