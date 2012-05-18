@@ -6,7 +6,7 @@ Fast File Transfer over NAT.
 What is it?
 -----------
 
-It can transfer files between Linux machines. The transfer speed is generally much faster than scp, although depending on machines and networks. ffton works much better than scp particularly when the bandwidth is wide and the network latency is high. TCP does not work well with wider bandwidth and higher latency, so ffton uses UDP instead of TCP.
+It can transfer files between Linux machines as scp does. The transfer speed is generally much faster than scp, although depending on machines and networks. ffton works much better than scp particularly when the bandwidth is wide and the network latency is high. TCP does not work well with wider bandwidth and higher latency, so ffton uses UDP instead of TCP. The special congestion control provided by libudt does all the trick, and ffton wraps it for user-friendliness. Although most outgoing UDP packets are often filtered by NAT firewall in supercomputer centers, ffton (libudt) can pass it by UDP hole punching if possible.
 
 Prerequisites
 -------------
@@ -75,16 +75,19 @@ because I haven't implemented it yet.
 Limitation
 ----------
 
+ffton does not encrypt files, so do not transfer secret files at the moment.
 ffton does not accept wildcards because the author has not implemented it yet.
 ffton cannot transfer small files fast although it can potentially do much better in the future.
 ffron cannot resume file transfer although it should be able to.
 ffton should be able to transfer files between two remote nodes, but the author has not implemented yet.
 ffton should be able to handle double SSH (i.e., ssh to B from A, then ssh to C from B, and communicate between A and C) but not yet.
 
-Tips
-----
+Tips and notes
+--------------
 
 ffton requires a STUN server to identify the external IP of your machine. It points to the public STUN server in The University of Tokyo by default, but if you do not prefer using it or when it is unavailable due to maintenance, modify the list 'public_stun_servers' in ffton.
+
+If you have a root access on the both sides, just use [High Performance SSH/SCP](http://www.psc.edu/networking/projects/hpn-ssh/) and you would be happy with it. Another option might be [Aspera](http://www.asperasoft.com/) if you can pay money and there is no firewall between the both sides. Neither conditions were met in my case so I developed ffton.
 
 License
 -------
