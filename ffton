@@ -1,0 +1,555 @@
+#!/usr/bin/env python
+#coding=utf-8
+
+# STUN-related code was mostly derived from pystun (http://code.google.com/p/pystun)
+# developed by Justin Riley. As of writing, pystun is distribued under MIT
+# License, so here I distribute this code (fton_setup.py) under the same
+# license (MIT License). The other part was written by me. ffton runs on Python 2.x
+#
+# Sep 30 2011 Masahiro Kasahara <masahiro@kasahara.ws>
+#
+# NOTE: It seems that pystun was moved to https://github.com/jtriley/pystun
+#       (May 5 2012)
+
+import socket, sys, struct, binascii, random, re, subprocess
+import ConfigParser
+
+# You may want to edit the following list of STUN servers.
+public_stun_servers = [
+    'stun1.cb.k.u-tokyo.ac.jp',
+#    'stun.softjoys.com',
+#    'stun.ekiga.net',
+#    's1.taraba.net',
+#    's2.taraba.net',
+#    's1.voipstation.jp',
+#    's2.voipstation.jp',
+#    'stun.ideasip.com',
+#    'stun.xten.com'
+]
+
+# stun attributes
+MappedAddress    = '0001'
+ResponseAddress  = '0002'
+ChangeRequest    = '0003'
+SourceAddress    = '0004'
+ChangedAddress   = '0005'
+Username         = '0006'
+Password         = '0007'
+MessageIntegrity = '0008'
+ErrorCode        = '0009'
+UnknownAttribute = '000A'
+ReflectedFrom    = '000B'
+XorOnly          = '0021'
+XorMappedAddress = '8020'
+ServerName       = '8022'
+SecondaryAddress = '8050' # Non standard extention
+
+# types for a stun message 
+BindRequestMsg               = '0001'
+BindResponseMsg              = '0101'
+BindErrorResponseMsg         = '0111'
+SharedSecretRequestMsg       = '0002'
+SharedSecretResponseMsg      = '0102'
+SharedSecretErrorResponseMsg = '0112'
+
+dictAttrToVal ={'MappedAddress'   : MappedAddress,
+                'ResponseAddress' : ResponseAddress,
+                'ChangeRequest'   : ChangeRequest,
+                'SourceAddress'   : SourceAddress,
+                'ChangedAddress'  : ChangedAddress,
+                'Username'        : Username,
+                'Password'        : Password,
+                'MessageIntegrity': MessageIntegrity,
+                'ErrorCode'       : ErrorCode,
+                'UnknownAttribute': UnknownAttribute,
+                'ReflectedFrom'   : ReflectedFrom,
+                'XorOnly'         : XorOnly,
+                'XorMappedAddress': XorMappedAddress,
+                'ServerName'      : ServerName,
+                'SecondaryAddress': SecondaryAddress}
+
+dictMsgTypeToVal = {'BindRequestMsg'              :BindRequestMsg,
+                    'BindResponseMsg'             :BindResponseMsg,
+                    'BindErrorResponseMsg'        :BindErrorResponseMsg,
+                    'SharedSecretRequestMsg'      :SharedSecretRequestMsg,
+                    'SharedSecretResponseMsg'     :SharedSecretResponseMsg,
+                    'SharedSecretErrorResponseMsg':SharedSecretErrorResponseMsg}
+           
+Blocked = "Blocked"
+OpenInternet = "Open Internet"
+FullCone = "Full Cone"
+SymmetricUDPFirewall = "Symmetric UDP Firewall"
+RestricNAT = "Address-Restricted NAT"
+RestricPortNAT = "Port-Restricted NAT"
+SymmetricNAT = "Symmetric NAT"
+ChangedAddressError = "Meet an error, when do Test1 on Changed IP and Port"
+
+def GenTranID():
+    a = ''
+    for i in xrange(32):
+        a += random.choice('0123456789ABCDEF')
+    return a
+
+def Test(s, host, port, source_ip, source_port, options, send_data=""):
+    retVal = {'Resp':False, 'ExternalIP':None, 'ExternalPort':None, 'SourceIP':None, 'SourcePort':None, 'ChangedIP':None, 'ChangedPort':None}
+    
+    str_len = "%#04d" % (len(send_data) / 2)
+    TranID = GenTranID()
+    str_data = ''.join([BindRequestMsg, str_len, TranID, send_data])
+
+    data = binascii.a2b_hex(str_data)
+    recvCorr = False
+    while not recvCorr:
+        recieved = False
+        count = 3
+        while not recieved:
+            if options.verbose >= 3:
+                print "      sendto",(host, port)
+            s.sendto(data,(host, port))
+            try:
+                buf, addr = s.recvfrom(2048)
+                if options.verbose >= 3:
+                    print "      recvfrom",addr
+                recieved = True
+            except Exception:
+                recieved = False
+                if count > 0:
+                    count -= 1
+                else:
+                    retVal['Resp'] = False
+                    return retVal
+        
+        MsgType = binascii.b2a_hex(buf[0:2])
+        if dictValToMsgType[MsgType] == "BindResponseMsg" and TranID.upper() == binascii.b2a_hex(buf[4:20]).upper():
+            recvCorr = True
+            retVal['Resp'] = True
+            len_message = int(binascii.b2a_hex(buf[2:4]), 16)
+            len_remain = len_message
+            base = 20
+            while len_remain:
+                attr_type = binascii.b2a_hex(buf[base:(base+2)])
+                attr_len = int(binascii.b2a_hex(buf[(base+2):(base+4)]),16)
+                if attr_type == MappedAddress:
+                    port = int(binascii.b2a_hex(buf[base+6:base+8]), 16)
+                    ip = "".join([str(int(binascii.b2a_hex(buf[base+8:base+9]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+9:base+10]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+10:base+11]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+11:base+12]), 16))])
+                    retVal['ExternalIP'] = ip
+                    retVal['ExternalPort'] = port
+                    
+                if attr_type == SourceAddress:
+                    port = int(binascii.b2a_hex(buf[base+6:base+8]), 16)
+                    ip = "".join([str(int(binascii.b2a_hex(buf[base+8:base+9]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+9:base+10]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+10:base+11]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+11:base+12]), 16))])
+                    retVal['SourceIP'] = ip
+                    retVal['SourcePort'] = port
+                if attr_type == ChangedAddress:
+                    port = int(binascii.b2a_hex(buf[base+6:base+8]), 16)
+                    ip = "".join([str(int(binascii.b2a_hex(buf[base+8:base+9]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+9:base+10]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+10:base+11]), 16)),'.',
+                    str(int(binascii.b2a_hex(buf[base+11:base+12]), 16))])
+                    retVal['ChangedIP'] = ip
+                    retVal['ChangedPort'] = port
+
+                if attr_type == ServerName:
+                    serverName = buf[(base+4):(base+4+attr_len)]
+                base = base + 4 + attr_len
+                len_remain = len_remain - (4+attr_len)
+    return retVal
+
+def Initialize():
+    items = dictAttrToVal.items()
+    global dictValToAttr
+    dictValToAttr = {}
+    for i in xrange(len(items)):
+        dictValToAttr.update({items[i][1]:items[i][0]})
+    items = dictMsgTypeToVal.items()
+    global dictValToMsgType
+    dictValToMsgType = {}
+    for i in xrange(len(items)):
+        dictValToMsgType.update({items[i][1]:items[i][0]})
+    
+
+def GetNATType(s, source_ip, source_port, options, get_ext_ip_only = False):
+    Initialize()
+    
+    host = options.host
+    port = 3478
+
+    if options.verbose >= 1:
+        print "  Do Test1"
+    ret = Test(s, host, port, source_ip, source_port, options)
+    if options.verbose >= 2:
+        print "    Result:",ret
+    type = None
+    exIP = ret['ExternalIP']
+    if exIP != None and get_ext_ip_only: return (None, exIP, 0)
+    exPort = ret['ExternalPort']
+    changedIP = ret['ChangedIP']
+    changedPort = ret['ChangedPort']
+    
+    if not ret['Resp']:
+        type = Blocked
+    else:
+        if ret['ExternalIP'] == source_ip:
+            changeRequest = ''.join([ChangeRequest,'0004',"00000006"])
+            ret = Test(s, host, port, source_ip, source_port, options, changeRequest)
+            if ret['Resp'] == True:
+                type = OpenInternet
+            else:
+                type = SymmetricUDPFirewall
+            
+        else:
+            changeRequest = ''.join([ChangeRequest,'0004',"00000006"])
+            if options.verbose >= 1:
+                print "  Do Test2"
+            ret = Test(s, host, port, source_ip, source_port, options, changeRequest)
+            if options.verbose >= 2:
+                print "    Result:",ret
+            
+            if ret['Resp'] == True:
+                type = FullCone
+            else:
+                if options.verbose >= 1:
+                    print "  Do Test1"
+                ret = Test(s, changedIP, changedPort, source_ip, source_port, options)
+                if options.verbose >= 2:
+                    print "    Result:",ret
+                
+                if not ret['Resp']:
+                    type = ChangedAddressError
+                else:
+                    if exIP == ret['ExternalIP'] and exPort == ret['ExternalPort']:
+                        changePortRequest = ''.join([ChangeRequest,'0004',"00000002"])
+                        if options.verbose >= 1:
+                            print "  Do Test3"
+                        ret = Test(s, changedIP, port, source_ip, source_port, options, changePortRequest)
+                        if options.verbose >= 2:
+                            print "    Result:",ret
+                        if ret['Resp'] == True:
+                            type = RestricNAT
+                        else:
+                            type = RestricPortNAT
+                    else:
+                        type = SymmetricNAT
+    return (type, exIP, exPort)
+
+def getDefaultSTUN(options):
+    return public_stun_servers[random.randint(0, len(public_stun_servers) - 1)]
+
+def initFftonRC(get_external_ip):
+    socket.setdefaulttimeout(options.timeout)
+    source_ip = socket.gethostbyname(socket.gethostname())
+    source_port = random.randint(50000, 55000) # take a random port
+
+    if not get_external_ip:
+        print "File Transfer Over NAT setup tool"
+        print ""
+    if options.verbose >= 1:
+        print "Output filename: ", options.filename
+        print "Source IP: ", source_ip
+        print "Source port: ", source_port
+        print "Iteration: ", options.iteration
+        print "Socket timeout:", options.timeout, " seconds"
+        print "Iteration wait:", options.wait, " seconds"
+        if options.host == None:
+            print "STUN server: auto"
+        else:
+            print "STUN server:", options.host
+    
+    options.host = getDefaultSTUN(options)
+    if options.verbose >= 1:
+        print "STUN server:", options.host
+
+    if not get_external_ip:
+        print "We are going to check how your NAT router behaves."
+        print
+
+    if options.iteration == 3 and not get_external_ip:
+        print "It is going to take 4 minutes, so please be patient."
+        print "If you are not patient, you can give -i1 option to"
+        print "shorten the processing time, although the result"
+        print "may be inaccurate and might cause problems later."
+        print "We do not recommend using -i option, generally."
+        if options.verbose == 0:
+            print "If you want to know what is going now precisely,"
+            print "please give -v3 option. Less number, more quiet."
+        print
+
+    count = 1
+
+    iteration_count = 0
+    WorstNatType = None
+    exIPSet = set()
+    exPortSet = set()
+
+    while iteration_count < 3: # We check three times.
+        iteration_count += 1
+        if options.verbose:
+            print "Iteration count", iteration_count
+        #global s
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        s.bind((source_ip, source_port))
+        
+        NatType, exIP, exPort = GetNATType(s, source_ip, source_port, options, get_external_ip)
+        if get_external_ip and exIP != None:
+            return exIP
+        if options.verbose >= 2:
+            print "  NAT Type:", NatType
+            print "  External IP:", exIP
+            print "  External Port:", exPort
+        else:
+            print " ", exIP, ":", exPort, " ", NatType
+        if WorstNatType == None:
+            WorstNatType = NatType
+        else:
+            if NatType == RestricPortNAT:
+                if WorstNatType == FullCone or WorstNatType == RestricNAT:
+                    WorstNatType = RestricPortNAT
+            elif NatType == RestricNAT:
+                if WorstNatType == FullCone:
+                    WorstNatType = RestricNAT
+            elif NatType == SymmetricNAT:
+                WorstNatType = SymmetricNAT
+        if exIP != None:
+            exIPSet.add(exIP)
+        if exPort != None:
+            exPortSet.add(exPort)
+        import time
+        if options.verbose >= 1:
+            print "  Waiting", options.wait, "seconds..."
+            if options.verbose >= 2:
+                print "  This wait is necessary. Please be patient."
+        time.sleep(options.wait * 1.0)
+    
+    s.close()
+    print
+    conn_type = None
+    if len(exIPSet) == 0 or len(exIPSet) > 1:
+        if len(exIPSet) == 0:
+            print "We could not reach outside the internal LAN."
+            print "If STUN server is dead, you will also see this situation,"
+            print "so you may want to try with another STUN server."
+        else:
+            print "It seems like you are using a router with multiple IPs."
+        print "Sadly, we recommand you to fall back to scp."
+        conn_type = "scp"
+    elif len(exPortSet) > 1 or not source_port in exPortSet:
+        print "Umm. It seems that you are using NAPT, with which"
+        print "fton does not work well."
+        print "Sadly, we recommand you to fall back to scp."
+        conn_type = "scp"
+    else:
+        conn_type = WorstNatType
+
+    print "Determined connection type: ", conn_type
+    try:
+        f = open(options.filename, "w")
+        print >>f, "[stun]"
+        print >>f, "connection_type=%s" % conn_type
+        print >>f, "stun_server=%s" % options.host
+        f.close()
+    except IOError:
+        print >>sys.stderr, "Cannot open %s" % options.filename
+
+def getConfig(options):
+    cpar = ConfigParser.SafeConfigParser()
+    try:
+        cpar.read(options.filename)
+        nat_type  = cpar.get("stun", "connection_type")
+        host_name = cpar.get("stun", "stun_server")
+    except IOError:
+        print >>sys.stderr, "ERROR: ~/.fftonrc was not found (or could not be opened)"
+        print >>sys.stderr, "       If you have not initialized ffton, type 'ffton --init' first to initialize."
+        sys.exit(1)
+    ext_ip = initFftonRC(True)
+    if ext_ip == None:
+        print >>sys.stderr, "ERROR: External IP could not be determined."
+        print >>sys.stderr, "       Check the network connection first."
+        sys.exit(2)
+    if options.verbose >= 1:
+        print "External IP = %s" % ext_ip
+    cpar.set("stun", "external_ip", ext_ip)
+    return cpar
+
+def getOpenUDPPort():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+def doChild(config):
+    print config.get("stun", "external_ip")
+    print getOpenUDPPort()
+    sys.stdout.flush()
+    ffton_child_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffton-child")
+    while True:
+        s = sys.stdin.readline()
+        if s == None:
+            print >>sys.stderr, "Pipe broken."
+            break
+        s = s.strip()
+        if s == "quit": break
+        try:
+            clist = [ffton_child_path]
+            clist.extend(s.split(" "))
+            retcode = subprocess.call(clist, shell=False, stdout=sys.stdout, stderr=sys.stderr)
+            if retcode < 0:
+                print >>sys.stderr, "ERROR: %d" % (-retcode)
+            else:
+                print "DONE"
+                sys.stdout.flush()
+        except OSError, e:
+            print "error on calling ffton-child."
+            break
+    print "ended."
+
+def launch_ffton_child(shell_command, local_or_remote_str, error_code_on_error):
+    try:
+        p = subprocess.Popen(shell_command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr)
+    except OSError, e:
+        print >>sys.stderr, "ERROR: could not execute ffton %sly. Please make sure that ffton is on PATH (on the %s system)." % (local_or_remote_str, local_or_remote_str), e
+        sys.exit(error_code_on_error)
+    return p
+
+def get_ip_and_port_from_ffton_child(p, local_or_remote_str, error_code_on_error):
+    try:
+        ip_str = p.stdout.readline()
+        ip = ip_str.strip()
+        port_str = p.stdout.readline()
+        port = int(port_str.strip())
+    except:
+        print >>sys.stderr, "ERROR: could not get an external IP on the %s system. '%s', '%s'" % (local_or_remote_str, ip_str, port_str)
+        print >>sys.stderr, "       please make sure that ffton is on PATH, and ffton-child is placed in the same directory as ffton."
+        print >>sys.stderr, "       also make sure that ffton --init is executed once."
+        sys.exit(error_code_on_error)
+    return (ip, port)
+
+def ffton_copy(srcs, dest, options, config):
+    p = re.compile(r'^(([^@]+)@)?([a-zA-Z0-9_\.\-]+):(.*)$')
+    dest_match = p.match(dest)
+    if dest_match != None:
+        dest_ssh = { 
+            'user': dest_match.group(2),
+            'host': dest_match.group(3),
+            'dir': dest_match.group(4),
+            }
+        if 1 < options.verbose:
+            print "Local(remote) to remote dest ", dest_ssh
+        for src in srcs:
+            if 1 < options.verbose:
+                print "  %s --> %s" % (src, dest)
+            src_match = p.match(src)
+            if src_match != None:
+                src_ssh = { 
+                    'remote': True,
+                    'user': src_match.group(2),
+                    'host': src_match.group(3),
+                    'dir': src_match.group(4),
+                    }
+                print "Remote to remote copy is not supported yet. Sorry."
+                sys.exit(0)
+            else:
+                srcp = launch_ffton_child("ffton --child", "local", 7)
+                (src_ip, src_port) = get_ip_and_port_from_ffton_child(srcp, "local", 7)
+                destp = launch_ffton_child("ssh -l %s %s ffton --child" % (dest_ssh['user'], dest_ssh['host']), "remote", 8)
+                (dest_ip, dest_port) = get_ip_and_port_from_ffton_child(destp, "remote", 8)
+                if 1 < options.verbose:
+                    print "SRC %s:%d" % (src_ip, src_port)
+                    print "DEST %s:%d" % (dest_ip, dest_port)
+                    print "local to remote"
+                if 2 < options.verbose:
+                    sys.stdout.write("--send %s %s %s %s\n" % (dest_ip, dest_port, src_port, src))
+                srcp.stdin.write("--send %s %s %s %s\n" % (dest_ip, dest_port, src_port, src))
+                srcp.stdin.flush()
+                if 2 < options.verbose:
+                    sys.stdout.write("--recv %s %s %s %s\n" % (src_ip, src_port, dest_port, os.path.join(dest_ssh['dir'], os.path.basename(src))))
+                destp.stdin.write("--recv %s %s %s %s\n" % (src_ip, src_port, dest_port, os.path.join(dest_ssh['dir'], os.path.basename(src))))
+                destp.stdin.flush()
+                result = destp.stdout.readline()
+                if 1 < options.verbose:
+                    print "RRES: %s" % result
+                srcp.stdin.write("quit\n")
+                srcp.stdin.flush()
+                destp.stdin.write("quit\n")
+                destp.stdin.flush()
+    else:
+        print "Remote to local dest"
+        for src in srcs:
+            if 1 < options.verbose:
+                print "  %s --> %s" % (src, dest)
+            src_match = p.match(src)
+            if src_match != None:
+                src_ssh = { 
+                    'remote': True,
+                    'user': src_match.group(2),
+                    'host': src_match.group(3),
+                    'dir': src_match.group(4),
+                    }
+                srcp = launch_ffton_child("ssh -l %s %s ffton --child" % (src_ssh['user'], src_ssh['host']), "remote", 8)
+                (src_ip, src_port) = get_ip_and_port_from_ffton_child(srcp, "remote", 7)
+                destp = launch_ffton_child("ffton --child", "local", 7)
+                (dest_ip, dest_port) = get_ip_and_port_from_ffton_child(destp, "local", 8)
+                if 1 < options.verbose:
+                    print "SRC %s:%d" % (src_ip, src_port)
+                    print "DEST %s:%d" % (dest_ip, dest_port)
+                    print "local to remote"
+                if 2 < options.verbose:
+                    sys.stdout.write("--send %s %s %s %s\n" % (dest_ip, dest_port, src_port, src_ssh['dir']))
+                srcp.stdin.write("--send %s %s %s %s\n" % (dest_ip, dest_port, src_port, src_ssh['dir']))
+                srcp.stdin.flush()
+                if 2 < options.verbose:
+                    sys.stdout.write("--recv %s %s %s %s\n" % (src_ip, src_port, dest_port, os.path.join(dest, os.path.basename(src_ssh['dir']))))
+                destp.stdin.write("--recv %s %s %s %s\n" % (src_ip, src_port, dest_port, os.path.join(dest, os.path.basename(src_ssh['dir']))))
+                destp.stdin.flush()
+                result = destp.stdout.readline()
+                if 1 < options.verbose:
+                    print "RRES: %s" % result
+                srcp.stdin.write("quit\n")
+                srcp.stdin.flush()
+                destp.stdin.write("quit\n")
+                destp.stdin.flush()
+            else:
+                print >>sys.stderr, "Local to local copy is not supported. Sorry."
+
+if __name__ == '__main__':
+    from optparse import OptionParser
+    # Although optparse is deprecated, it runs with older Python so I use it.
+    import os
+    parser = OptionParser()
+    parser.add_option("-z", "--init", action="store_true", dest="init", default=False)
+    parser.add_option("-v", "--verbose", action="store", type="int", dest="verbose", default=0, help="verbose")
+    parser.add_option("-f", "--file", dest="filename", help="Output file name")
+    parser.add_option("-i", "--iteration", dest="iteration", help="Number of iteration", default=3)
+    parser.add_option("-w", "--wait", dest="wait", type="int", help="Wait between iterations in second", default=60)
+    parser.add_option("-t", "--timeout", dest="timeout", type="int", help="Socket timeout in second", default=2)
+    parser.add_option("-s", "--server", dest="host", type="string", help="STUN server", default=None)
+    parser.add_option("-r", "--recursive", action="store_true", dest="recursive", default=False)
+    parser.add_option("-c", "--child", action="store_true", dest="child", default=False)
+    (options, args) = parser.parse_args()
+    if options.filename == None:
+        options.filename = os.environ['HOME']
+        if options.filename == None:
+            print >> sys.stderr, "You must set HOME environment variable first."
+            sys.exit(1)
+        options.filename += "/.fftonrc"
+    if options.init:
+        initFftonRC(False)
+        sys.exit(0)
+    if len(args) < 2 and not options.child:
+        print >> sys.stderr, "Usage: ffton [options] <src1> [src2 [src3 ...]] <dest>";
+        sys.exit(2)
+    config = getConfig(options)
+    if options.child:
+        doChild(config)
+        sys.exit(0)
+    destination = args[-1]
+    sources = args[:-1]
+    ffton_copy(sources, destination, options, config)
+
