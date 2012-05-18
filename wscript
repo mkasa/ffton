@@ -1,7 +1,7 @@
 
 # -*- python -*-
 APPNAME = 'ffton'
-VERSION = '1.00'
+VERSION = '1.01'
 
 def options(opt):
     opt.load('compiler_cxx python')
@@ -12,9 +12,10 @@ def configure(conf):
     conf.check_python_version((2,4,2))
     conf.env.append_unique('CXXFLAGS', ['-O1'])
     if conf.options.udt != '':
-        conf.env.INCLUDES += "%s/include" % conf.options.udt
-        conf.env.LIB += "%s/lib" % conf.options.udt
+        conf.env.INCLUDES += ["%s/include" % conf.options.udt]
+        conf.env.LIBPATH += ["%s/lib" % conf.options.udt]
     conf.env.LIB += ['pthread']
+    conf.env.CXXFLAGS += ['-O2']
     conf.check_cxx(lib = 'udt', uselib_store = 'UDT')
 
 def build(bld):

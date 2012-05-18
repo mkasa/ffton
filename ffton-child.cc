@@ -1,5 +1,4 @@
 // -*- mode:C++; c-basic-offset:2; tab-width:2 -*-
-//opt: -g -O1 -I/home/mkasa/lcl/include -L/home/mkasa/lcl/lib -ludt -pthread
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -69,7 +68,11 @@ public:
   }
   int setRendezvous() {
     bool rendezvous = true;
-    UDT::setsockopt(sock, 0, UDT_RENDEZVOUS, &rendezvous, sizeof(rendezvous));
+    return UDT::setsockopt(sock, 0, UDT_RENDEZVOUS, &rendezvous, sizeof(rendezvous));
+  }
+  int setLinger() {
+    bool linger = true;
+    return UDT::setsockopt(sock, 0, UDT_LINGER, &linger, sizeof(linger));
   }
   /// returns UDT::ERROR if error.
   int bind(int listenPortNumber) {
@@ -85,8 +88,10 @@ public:
   int connect(int listenPortNumber, const char* peerAddressName, int peerPort) {
     const int result1 = setRendezvous();
     if(result1 == UDT::ERROR) return result1;
-    const int result2 = bind(listenPortNumber);
+    const int result2 = setLinger();
     if(result2 == UDT::ERROR) return result2;
+    const int result3 = bind(listenPortNumber);
+    if(result3 == UDT::ERROR) return result3;
     return connect(peerAddressName, peerPort);
   }
   int connect(const char* peerAddressName, int peerPort) {
