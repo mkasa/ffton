@@ -11,9 +11,9 @@ It can transfer files between Linux machines. The transfer speed is generally mu
 Prerequisites
 -------------
 
--Python 2.4 or later
--[libudt](http://udt.sourceforge.net/ "libudt") ver 4.x
--C++ compiler such as g++
+- Python 2.4 or later
+- [libudt](http://udt.sourceforge.net/ "libudt") ver 4.x
+- C++ compiler such as g++
 
 Installation
 ------------
