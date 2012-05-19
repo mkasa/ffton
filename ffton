@@ -243,7 +243,12 @@ def getDefaultSTUN(options):
 
 def initFftonRC(get_external_ip):
     socket.setdefaulttimeout(options.timeout)
-    source_ip = socket.gethostbyname(socket.gethostname())
+#    source_ip = socket.gethostbyname(socket.gethostname())
+    global_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    global_socket.connect(("gmail.com",80))
+    source_ip=global_socket.getsockname()[0]
+    global_socket.close()
+
     source_port = random.randint(50000, 55000) # take a random port
 
     if not get_external_ip:
